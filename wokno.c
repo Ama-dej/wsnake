@@ -94,8 +94,6 @@ char * readstring(int sockfd)
 
 int wl_registry_bind(int sockfd, uint32_t name, char *interface, uint32_t version)
 {
-	//uint32_t bmsg[(8 + 4 + (strlen(interface) + 3) + 4 + 4) >> 2];
-	
 	int bmsg_len = 8 + 4 + 4 + ((strlen(interface) + 3) & ~0b11) + 4 + 4;
 
 	uint32_t *bmsg = malloc(bmsg_len);
@@ -108,27 +106,12 @@ int wl_registry_bind(int sockfd, uint32_t name, char *interface, uint32_t versio
 	tmp = write4(tmp, version);
 	tmp = write4(tmp, object_id);
 
-	/*
-	char *a = (char *)bmsg;
-
-	for (int i = 0; i < bmsg_len / 4; i++) {
-		printf("%d\n", bmsg[i]);
-	} putchar('\n');
-
-	printf("test %d %d\n", (char *)tmp - (char *)bmsg, bmsg_len);
-	*/
-
-	while (send(sockfd, bmsg, bmsg_len, 0) != bmsg_len) {
+	if (send(sockfd, bmsg, bmsg_len, 0) != bmsg_len) {
 		printf("wl_registry_bind: ni ratal poslat\n");
-		//exit(errno);
+		exit(errno);
 	}
 
-	//printf("%d\n", send(sockfd, bmsg, bmsg_len, 0));
-
-	//printf("jajca\n");
-
 	free(bmsg);
-	//printf("mlek\n");
 	return object_id++;
 }
 
@@ -173,19 +156,18 @@ int main()
 	char buffer[1100];
 
 	while (1) {
-		if (wl_shm_bound && false) {
+		if (wl_shm_bound) {
 			uint32_t wspmsg[5] = {wl_shm_id, (20 << 16) | WL_SHM_CREATE_POOL, object_id, shmfd, 40000};
 			wl_shm_pool_id = object_id++;
 
 			while (send(sockfd, wspmsg, sizeof(wspmsg), MSG_DONTWAIT) != sizeof(wspmsg)) {
 				printf("ni ratal poslat prošnje\n");
 				return -1;
-				//exit(errno);
 			}
 			
 			printf("INFO: Created wl_shm_pool with id %d.\n", wl_shm_pool_id);
 
-			uint32_t cbmsg[8] = {wl_shm_pool_id, (32 << 16) | WL_SHM_POOL_CREATE_BUFFER, object_id, 0, 100, 100, 100, 1};
+			/*uint32_t cbmsg[8] = {wl_shm_pool_id, (32 << 16) | WL_SHM_POOL_CREATE_BUFFER, object_id, 0, 100, 100, 100, 1};
 			wl_buffer_id = object_id++;
 
 			if (send(sockfd, cbmsg, sizeof(cbmsg), MSG_DONTWAIT) != sizeof(cbmsg)) {
@@ -193,7 +175,7 @@ int main()
 				return -1;
 			}
 
-			printf("INFO: Created wl_buffer with id %d.\n", wl_buffer_id);
+			printf("INFO: Created wl_buffer with id %d.\n", wl_buffer_id);*/
 
 			wl_shm_bound = false;
 		}

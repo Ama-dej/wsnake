@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <stdbool.h>
+#include <sys/shm.h>
 
 #define WL_DISPLAY_OBJECT_ID 1
 #include "functions.h"
@@ -31,6 +32,8 @@ bool wl_shm_flag = false;
 bool wl_compositor_flag = false;
 bool xdg_wm_base_flag = false;
 bool wl_surface_flag = false;
+
+bool change_surface = false;
 
 struct message_t {
 	uint32_t id;
@@ -272,8 +275,8 @@ int xdg_surface_get_toplevel(int sockfd)
 	uint32_t *gtmsg = malloc(gtmsg_len);
 	uint32_t *tmp = gtmsg;
 
-	tmp = write4(tmp, xdg_wm_base_id);
-	tmp = write4(tmp, (gtmsg_len << 16) | XDG_WM_BASE_GET_XDG_SURFACE);
+	tmp = write4(tmp, xdg_surface_id);
+	tmp = write4(tmp, (gtmsg_len << 16) | XDG_SURFACE_GET_TOPLEVEL);
 	tmp = write4(tmp, object_id);
 
 	if (send(sockfd, gtmsg, gtmsg_len, 0) != gtmsg_len) {
@@ -293,8 +296,8 @@ void wl_surface_commit(int sockfd)
 	uint32_t *cmsg = malloc(cmsg_len);
 	uint32_t *tmp = cmsg;
 
-	tmp = write4(tmp, xdg_wm_base_id);
-	tmp = write4(tmp, (cmsg_len << 16) | XDG_WM_BASE_GET_XDG_SURFACE);
+	tmp = write4(tmp, wl_surface_id);
+	tmp = write4(tmp, (cmsg_len << 16) | WL_SURFACE_COMMIT);
 
 	if (send(sockfd, cmsg, cmsg_len, 0) != cmsg_len) {
 		printf("wl_surface_commit: ni ratal poslat\n");
@@ -313,8 +316,8 @@ void wl_surface_attach(int sockfd, uint32_t wl_buffer_id)
 	uint32_t *amsg = malloc(amsg_len);
 	uint32_t *tmp = amsg;
 
-	tmp = write4(tmp, xdg_wm_base_id);
-	tmp = write4(tmp, (amsg_len << 16) | XDG_WM_BASE_GET_XDG_SURFACE);
+	tmp = write4(tmp, wl_surface_id);
+	tmp = write4(tmp, (amsg_len << 16) | WL_SURFACE_ATTACH);
 	tmp = write4(tmp, wl_buffer_id);
 	tmp = write4(tmp, 0);
 	tmp = write4(tmp, 0);
@@ -332,7 +335,7 @@ void wl_surface_attach(int sockfd, uint32_t wl_buffer_id)
 int main()
 {
 	int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	int shmfd = open("shm", O_RDWR | O_CREAT, 0666);
+	int shmfd = shm_open("shm", O_RDWR | O_CREAT, 0600);
 
 	if (sockfd == -1 || shmfd == -1) {
 		printf("sockfd == -1\n");
@@ -344,7 +347,7 @@ int main()
 		return -1;
 	}
 
-	void *shm = mmap(0, 40000, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
+	void *shm = mmap(NULL, 40000, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 
 	if (shm == (void *)-1) {
 		printf("aaaa mmap ni ratu\n");
@@ -370,7 +373,7 @@ int main()
 	char buffer[1100];
 
 	while (1) {
-		if (wl_shm_flag) {
+		/*if (wl_shm_flag) {
 			wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, 40000);
 			printf("INFO: Created wl_shm_pool with id %d.\n", wl_shm_pool_id);
 
@@ -378,7 +381,7 @@ int main()
 			printf("INFO: Created wl_buffer with id %d.\n", wl_buffer_id);
 
 			wl_shm_flag = false;
-		}
+		}*/
 
 		if (wl_compositor_flag) {
 			wl_surface_id = wl_compositor_create_surface(sockfd);
@@ -453,11 +456,15 @@ int main()
 
 			printf("INFO (xdg_wm_base): Ping! Pong!\n");
 		} else if (msg.id == xdg_surface_id && msg_opcode == XDG_SURFACE_CONFIGURE) { 
-			printf("INFO: fagergerg\n");
+			uint32_t serial = read4(sockfd);
+
+			change_surface = true;
+
+			printf("INFO (xdg_surface): Suggested surface change.\n");
 		} else if (msg.id == wl_shm_id && msg_opcode == WL_SHM_FORMAT) {
 	  		uint32_t format = read4(sockfd);
 
-			printf("INFO (wl_shm): Available pixel format 0x%x\n", format);	
+			printf("INFO (wl_shm): Available pixel format 0x%x.\n", format);	
 		} else if (msg.id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
 			printf("Goodbye...\n");
 			close(sockfd);

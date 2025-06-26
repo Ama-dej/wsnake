@@ -12,27 +12,31 @@
 #include <sys/shm.h>
 
 #define WL_DISPLAY_OBJECT_ID 1
+#define WIDTH 1024
+#define HEIGHT 576
+#define PIXEL_SIZE 4
+
 #include "functions.h"
 
 uint32_t object_id = 2;
 
-int wl_registry_id = -1;
-int wl_shm_id = -1;
-int wl_shm_pool_id = -1;
-int wl_buffer_id = -1;
-int wl_surface_id = -1;
-int wl_compositor_id = -1;
-int xdg_wm_base_id = -1;
-int xdg_surface_id = -1;
-int xdg_toplevel_id = -1;
+int wl_registry_id = 0;
+int wl_shm_id = 0;
+int wl_shm_pool_id = 0;
+int wl_buffer_id = 0;
+int wl_surface_id = 0;
+int wl_compositor_id = 0;
+int xdg_wm_base_id = 0;
+int xdg_surface_id = 0;
+int xdg_toplevel_id = 0;
 
 uint32_t wl_shm_version;
 
 bool wl_shm_flag = false;
 bool wl_compositor_flag = false;
 bool xdg_wm_base_flag = false;
-bool wl_surface_flag = false;
 
+bool surfaces_flag = false;
 bool change_surface = false;
 
 struct message_t {
@@ -121,6 +125,7 @@ int wl_registry_bind(int sockfd, uint32_t name, char *interface, uint32_t versio
 
 	free(bmsg);
 
+	printf("INFO: Bound %s to id %d.\n", interface, object_id);
 	return object_id++;
 }
 
@@ -158,8 +163,8 @@ int wl_shm_create_pool(int sockfd, int shmfd, uint32_t size)
 	msg.msg_name = NULL;
 	msg.msg_namelen = 0;
 
-	iov[0].iov_base = "";
-	iov[0].iov_len = 1;
+	iov[0].iov_base = cpmsg;
+	iov[0].iov_len = cpmsg_len;
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
 
@@ -168,13 +173,9 @@ int wl_shm_create_pool(int sockfd, int shmfd, uint32_t size)
 		exit(errno);
 	}
 
-	if (send(sockfd, cpmsg, cpmsg_len, 0) != cpmsg_len) {
-		printf("wl_shm_create_pool: ni ratal poslat\n");
-		exit(errno);
-	}
-
 	free(cpmsg);
 
+	printf("INFO: Created wl_shm_pool with id %d.\n", object_id);
 	return object_id++;
 }
 
@@ -201,6 +202,7 @@ int wl_shm_pool_create_buffer(int sockfd, uint32_t offset, uint32_t width, uint3
 
 	free(cbmsg);
 
+	printf("INFO: Created wl_buffer with id %d.\n", object_id);
 	return object_id++;
 }
 
@@ -222,6 +224,7 @@ int wl_compositor_create_surface(int sockfd)
 
 	free(csmsg);
 
+	printf("INFO: Created wl_surface with id %d.\n", object_id);
 	return object_id++;
 }
 
@@ -243,6 +246,7 @@ void xdg_wm_base_pong(int sockfd, uint32_t serial)
 
 	free(pmsg);
 
+	printf("INFO: Pong!\n");
 	return;
 }
 
@@ -265,6 +269,7 @@ int xdg_wm_base_get_xdg_surface(int sockfd, uint32_t wl_surface_id)
 
 	free(gxsmsg);
 
+	printf("INFO: Created xdg_surface with id %d.\n", object_id);
 	return object_id++;
 }
 
@@ -286,6 +291,7 @@ int xdg_surface_get_toplevel(int sockfd)
 
 	free(gtmsg);
 
+	printf("INFO: Got xdg_toplevel with id %d.\n", object_id);
 	return object_id++;
 }
 
@@ -306,6 +312,7 @@ void wl_surface_commit(int sockfd)
 
 	free(cmsg);
 
+	printf("INFO: Commited surface with id %d.\n", wl_surface_id);
 	return;
 }
 
@@ -329,30 +336,107 @@ void wl_surface_attach(int sockfd, uint32_t wl_buffer_id)
 
 	free(amsg);
 
+	printf("INFO: Attached wl_buffer with id %d to wl_surface with id %d.\n", wl_buffer_id, wl_surface_id);
+	return;
+}
+
+void xdg_surface_ack_configure(int sockfd, uint32_t serial)
+{
+	unsigned int acmsg_len = 12;
+
+	uint32_t *acmsg = malloc(acmsg_len);
+	uint32_t *tmp = acmsg;
+
+	tmp = write4(tmp, xdg_surface_id);
+	tmp = write4(tmp, (acmsg_len << 16) | XDG_SURFACE_ACK_CONFIGURE);
+	tmp = write4(tmp, serial);
+
+	if (send(sockfd, acmsg, acmsg_len, 0) != acmsg_len) {
+		printf("xdg_surface_ack_configure: ni ratal poslat\n");
+		exit(errno);
+	}
+
+	free(acmsg);
+
+	printf("INFO: Acknowledged configure %d.\n", serial);
+	return;
+}
+
+void xdg_surface_set_window_geometry(int sockfd, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+	unsigned int swgmsg_len = 24;
+
+	uint32_t *swgmsg = malloc(swgmsg_len);
+	uint32_t *tmp = swgmsg;
+
+	tmp = write4(tmp, xdg_surface_id);
+	tmp = write4(tmp, (swgmsg_len << 16) | XDG_SURFACE_SET_WINDOW_GEOMETRY);
+	tmp = write4(tmp, x);
+	tmp = write4(tmp, y);
+	tmp = write4(tmp, width);
+	tmp = write4(tmp, height);
+
+	if (send(sockfd, swgmsg, swgmsg_len, 0) != swgmsg_len) {
+		printf("xdg_surface_set_window_geometry: ni ratal poslat\n");
+		exit(errno);
+	}
+
+	free(swgmsg);
+
 	return;
 }
 
 int main()
 {
 	int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	int shmfd = shm_open("shm", O_RDWR | O_CREAT, 0600);
+	int shmfd = shm_open("shm0239dk023k90f", O_RDWR | O_CREAT, 0600);
 
 	if (sockfd == -1 || shmfd == -1) {
 		printf("sockfd == -1\n");
 		return -1;
 	}
 
-	if (posix_fallocate(shmfd, 0, 40000) != 0) {
+	if (posix_fallocate(shmfd, 0, WIDTH * HEIGHT * PIXEL_SIZE) != 0) {
 		printf("ni ratal alocirat shm datoteke\n");
 		return -1;
 	}
 
-	void *shm = mmap(NULL, 40000, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
+	void *shm = mmap(NULL, WIDTH * HEIGHT * PIXEL_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 
 	if (shm == (void *)-1) {
 		printf("aaaa mmap ni ratu\n");
 		return -1;
 	}
+
+	int vegfd = open("./vegova.data", 0, S_IRUSR);
+
+	if (vegfd == -1) {
+		printf("šit\n");
+		return -1;
+	}
+
+	uint32_t *pixel_buffer = shm;
+
+	for (int i = 0; i < WIDTH * HEIGHT; i++) {
+		uint8_t r;
+		uint8_t g;
+		uint8_t b;
+			
+		int status = 0;
+
+		status |= read(vegfd, &r, 1);
+		status |= read(vegfd, &g, 1);
+		status |= read(vegfd, &b, 1);
+
+		if (status == -1) {
+			printf("Failed to read from file.\n");	
+			return -1;
+		}
+
+		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
+	}
+
+	close(vegfd);
 
 	// šalabajzersko
 	struct sockaddr_un addr = {AF_UNIX, "/run/user/1000/wayland-0"};
@@ -373,37 +457,30 @@ int main()
 	char buffer[1100];
 
 	while (1) {
-		/*if (wl_shm_flag) {
-			wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, 40000);
-			printf("INFO: Created wl_shm_pool with id %d.\n", wl_shm_pool_id);
+		if (surfaces_flag && change_surface) {
+			if (wl_shm_pool_id == 0)
+				wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE);
+			if (wl_buffer_id == 0)
+				wl_buffer_id = wl_shm_pool_create_buffer(sockfd, 0, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
 
-			wl_buffer_id = wl_shm_pool_create_buffer(sockfd, 0, 100, 100, 100 * 4, 1); // format
-			printf("INFO: Created wl_buffer with id %d.\n", wl_buffer_id);
+			wl_surface_attach(sockfd, wl_buffer_id);
+			wl_surface_commit(sockfd);
 
-			wl_shm_flag = false;
-		}*/
-
-		if (wl_compositor_flag) {
-			wl_surface_id = wl_compositor_create_surface(sockfd);
-			printf("INFO: Created wl_surface with id %d.\n", wl_surface_id);
-
-			wl_compositor_flag = false;
-			wl_surface_flag = true;
+			change_surface = false;
+			continue;
 		}
 
-		if (xdg_wm_base_flag && wl_surface_flag) {
+		if (wl_compositor_flag && xdg_wm_base_flag) {
+			wl_surface_id = wl_compositor_create_surface(sockfd);
 			xdg_surface_id = xdg_wm_base_get_xdg_surface(sockfd, wl_surface_id);
-			printf("INFO: Created xdg_surface with id %d.\n", xdg_surface_id);
-
 			xdg_toplevel_id = xdg_surface_get_toplevel(sockfd);
-			printf("INFO: Got xdg_toplevel with id %d.\n", xdg_toplevel_id);
 
-			//wl_surface_attach(sockfd, wl_buffer_id);
 			wl_surface_commit(sockfd);
-			printf("INFO: Commited surface contents.\n");
 
+			wl_compositor_flag = false;
 			xdg_wm_base_flag = false;
-			wl_surface_flag = false;	
+			surfaces_flag = true;
+			continue;
 		}
 
 		struct message_t msg = {0, 0};
@@ -413,8 +490,6 @@ int main()
 
 		int msg_size = msg.re_opcode_message_size >> 16;
 		int msg_opcode = msg.re_opcode_message_size & 0xFFFF; 
-
-		printf("%d %d\n", msg.id, msg_opcode);
 
 		//printf(" %d %d %x\n", WL_REGISTRY_GLOBAL, msg_opcode, msg.re_opcode_message_size);
 
@@ -429,15 +504,12 @@ int main()
 				wl_shm_id = wl_registry_bind(sockfd, name, interface, version);
 				wl_shm_version = version;
 				wl_shm_flag = true;
-				printf("INFO: Bound wl_shm to id %d.\n", wl_shm_id);
 			} else if (strcmp(interface, "wl_compositor") == 0) {
 				wl_compositor_id = wl_registry_bind(sockfd, name, interface, version);
 				wl_compositor_flag = true;
-				printf("INFO: Bound wl_compositor to id %d.\n", wl_compositor_id);
 			} else if (strcmp(interface, "xdg_wm_base") == 0) {
 				xdg_wm_base_id = wl_registry_bind(sockfd, name, interface, version);
 				xdg_wm_base_flag = true;
-				printf("INFO: Bound xdg_wm_base to id %d.\n", xdg_wm_base_id);
 			}
 
 			free(interface);
@@ -451,25 +523,30 @@ int main()
 			return -1;
 		} else if (msg.id == xdg_wm_base_id && msg_opcode == XDG_WM_BASE_PING) {
 			uint32_t serial = read4(sockfd);	
+			printf("INFO: Ping!\n");
 			
 			xdg_wm_base_pong(sockfd, serial);
-
-			printf("INFO (xdg_wm_base): Ping! Pong!\n");
 		} else if (msg.id == xdg_surface_id && msg_opcode == XDG_SURFACE_CONFIGURE) { 
 			uint32_t serial = read4(sockfd);
+			printf("INFO (xdg_surface): Suggested surface configuration change %d.\n", serial);
 
+			xdg_surface_ack_configure(sockfd, serial);
 			change_surface = true;
-
-			printf("INFO (xdg_surface): Suggested surface change.\n");
 		} else if (msg.id == wl_shm_id && msg_opcode == WL_SHM_FORMAT) {
 	  		uint32_t format = read4(sockfd);
 
 			printf("INFO (wl_shm): Available pixel format 0x%x.\n", format);	
 		} else if (msg.id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
 			printf("Goodbye...\n");
+
+			munmap(shm, 40000);
+			close(shmfd);
 			close(sockfd);
 			return 0; 
+		} else if (msg.id == wl_buffer_id && msg_opcode == WL_BUFFER_RELEASE) {
+			printf("INFO: Compositor released wl_buffer.\n");	
 		} else {
+			printf("%d %d\n", msg.id, msg_opcode);
 			while (recv(sockfd, buffer, msg_size - sizeof(msg), MSG_WAITALL) != msg_size - sizeof(msg));
 		}
 	}

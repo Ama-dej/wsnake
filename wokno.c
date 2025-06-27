@@ -12,6 +12,8 @@
 #include <sys/shm.h>
 
 #define WL_DISPLAY_OBJECT_ID 1
+#define WL_NULL 0
+
 #define WIDTH 1024
 #define HEIGHT 576
 #define PIXEL_SIZE 4
@@ -20,15 +22,15 @@
 
 uint32_t object_id = 2;
 
-int wl_registry_id = 0;
-int wl_shm_id = 0;
-int wl_shm_pool_id = 0;
-int wl_buffer_id = 0;
-int wl_surface_id = 0;
-int wl_compositor_id = 0;
-int xdg_wm_base_id = 0;
-int xdg_surface_id = 0;
-int xdg_toplevel_id = 0;
+int wl_registry_id = WL_NULL;
+int wl_shm_id = WL_NULL;
+int wl_shm_pool_id = WL_NULL;
+int wl_buffer_id = WL_NULL;
+int wl_surface_id = WL_NULL;
+int wl_compositor_id = WL_NULL;
+int xdg_wm_base_id = WL_NULL;
+int xdg_surface_id = WL_NULL;
+int xdg_toplevel_id = WL_NULL;
 
 uint32_t wl_shm_version;
 
@@ -63,8 +65,6 @@ uint32_t * writestring(uint32_t *buffer, char *s)
 
 	for (int i = 0; i < len4 / 4; i++)
 		buffer[i] = si[i];	
-
-	//printf("%s\n", buffer);
 
 	free(si);
 	return buffer + len4 / 4;
@@ -386,27 +386,81 @@ void xdg_surface_set_window_geometry(int sockfd, uint32_t x, uint32_t y, uint32_
 	return;
 }
 
-int main()
+int create_shm()
 {
-	int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	int shmfd = shm_open("shm0239dk023k90f", O_RDWR | O_CREAT, 0600);
 
-	if (sockfd == -1 || shmfd == -1) {
-		printf("sockfd == -1\n");
-		return -1;
+	if (shmfd == -1) {
+		printf("ERROR: Failed to open shm.\n");
+		exit(errno);
 	}
 
 	if (posix_fallocate(shmfd, 0, WIDTH * HEIGHT * PIXEL_SIZE) != 0) {
-		printf("ni ratal alocirat shm datoteke\n");
-		return -1;
+		printf("ERROR: Failed to allocate space for shm.\n");
+		exit(errno);
 	}
 
+	return shmfd;
+}
+
+void * map_shm(int shmfd)
+{
 	void *shm = mmap(NULL, WIDTH * HEIGHT * PIXEL_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
-
+	
 	if (shm == (void *)-1) {
-		printf("aaaa mmap ni ratu\n");
-		return -1;
+		printf("ERROR: Failed to mmap shm.\n");
+		exit(errno);
 	}
+
+	return shm;
+}
+
+int wl_display_get_registry(int sockfd)
+{
+	unsigned int grmsg_len = 12;
+
+	uint32_t *grmsg = malloc(grmsg_len);
+	uint32_t *tmp = grmsg;
+
+	tmp = write4(tmp, WL_DISPLAY_OBJECT_ID);
+	tmp = write4(tmp, (grmsg_len << 16) | WL_DISPLAY_GET_REGISTRY);
+	tmp = write4(tmp, object_id);
+
+	if (send(sockfd, grmsg, grmsg_len, 0) != grmsg_len) {
+		printf("ERROR: wl_display_get_registry request failed.\n");
+		exit(errno);
+	}
+
+	free(grmsg);
+
+	return object_id++;	
+}
+
+int connect_to_wl_socket()
+{
+	int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+	if (sockfd == -1) {
+		printf("ERROR: Failed to connect to wayland socket.\n");
+		exit(errno);
+	}
+
+	struct sockaddr_un addr = {AF_UNIX, "/run/user/1000/wayland-0"};
+
+	if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+		printf("ERROR: Failed to connect to wayland socket.\n");
+		exit(errno);
+	}
+
+	return sockfd;
+}
+
+int main()
+{
+	int sockfd = connect_to_wl_socket();
+
+	int shmfd = create_shm();
+	void *shm = map_shm(shmfd);
 
 	int vegfd = open("./vegova.data", 0, S_IRUSR);
 
@@ -438,23 +492,7 @@ int main()
 
 	close(vegfd);
 
-	// šalabajzersko
-	struct sockaddr_un addr = {AF_UNIX, "/run/user/1000/wayland-0"};
-
-	if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-		printf("ni ratal povezat :(\n");
-		return -1;
-	}
-
-	uint32_t gr_msg[3] = {WL_DISPLAY_OBJECT_ID, (12 << 16) | WL_DISPLAY_GET_REGISTRY, object_id};
-	wl_registry_id = object_id++;
-
-	if (send(sockfd, gr_msg, sizeof(gr_msg), 0) != sizeof(gr_msg)) {
-		printf("ni ratal poslat prošnje\n");
-		return -1;
-	}
-
-	char buffer[1100];
+	wl_registry_id = wl_display_get_registry(sockfd);
 
 	while (1) {
 		if (surfaces_flag && change_surface) {
@@ -539,7 +577,7 @@ int main()
 		} else if (msg.id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
 			printf("Goodbye...\n");
 
-			munmap(shm, 40000);
+			munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE);
 			close(shmfd);
 			close(sockfd);
 			return 0; 
@@ -547,7 +585,12 @@ int main()
 			printf("INFO: Compositor released wl_buffer.\n");	
 		} else {
 			printf("%d %d\n", msg.id, msg_opcode);
-			while (recv(sockfd, buffer, msg_size - sizeof(msg), MSG_WAITALL) != msg_size - sizeof(msg));
+
+			uint8_t trash;
+
+			for (int i = 0; i < msg_size - sizeof(msg); i++) {
+				while (recv(sockfd, &trash, 1, MSG_WAITALL) != 1);
+			}
 		}
 	}
 

@@ -41,10 +41,10 @@ bool xdg_wm_base_flag = false;
 bool surfaces_flag = false;
 bool change_surface = false;
 
-struct message_t {
-	uint32_t id;
-	uint32_t re_opcode_message_size;
-};
+#define FDBUFFER_LEN 32
+int fdbuffer[FDBUFFER_LEN];
+int fdbuffer_index = 0;
+int next_fd = 0;
 
 uint32_t * write4(uint32_t *buffer, uint32_t val)
 {
@@ -78,30 +78,28 @@ uint32_t * writenewid(uint32_t *buffer, char *interface, uint32_t version)
 	return buffer;
 }
 
-uint32_t read4(int sockfd)
+uint32_t read4(uint32_t **ptr)
 {
-	uint32_t tmp = 0;
-
-	if (recv(sockfd, &tmp, sizeof(tmp), MSG_WAITALL) != sizeof(tmp)) {
-		printf("read4: ni ratal prebrat\n");
-		exit(errno);
-	}
-
-	return tmp;
+	uint32_t *tmp = *ptr;
+	uint32_t val = *tmp;
+	*ptr = tmp + 1;
+	return val;
 }
 
-char * readstring(int sockfd)
+char * readstring(uint32_t **ptr)
 {
-	uint32_t len = read4(sockfd);
+	uint32_t len = read4(ptr);
+	uint32_t *tmp = *ptr;
+
 	uint32_t len4 = (len + 3) & ~0b11;
 	char *s = malloc(len4);
 
-	if (recv(sockfd, s, len4, MSG_WAITALL) != len4) {
-		printf("readstring: ni ratal prebrat\n");
-		free(s);
-		exit(errno);
-	}
+	uint32_t * si = (uint32_t *)s;
 
+	for (int i = 0; i < len4 / 4; i++)
+		si[i] = tmp[i];
+
+	*ptr = tmp + len4 / 4;
 	return s;
 }
 
@@ -455,6 +453,25 @@ int connect_to_wl_socket()
 	return sockfd;
 }
 
+int getfd(struct cmsghdr *cmptr)
+{
+	int fd = -1;
+
+	if (cmptr != NULL
+		&& cmptr->cmsg_len == CMSG_LEN(sizeof(int))
+		&& cmptr->cmsg_level == SOL_SOCKET 
+		&& cmptr->cmsg_type == SCM_RIGHTS) {
+
+		fd = *(int *)CMSG_DATA(cmptr);
+
+		printf("INFO: Got new file descriptor %d.\n", fd);
+	}
+	
+	return fd;
+}
+
+int fd;
+
 int main()
 {
 	int sockfd = connect_to_wl_socket();
@@ -521,20 +538,77 @@ int main()
 			continue;
 		}
 
-		struct message_t msg = {0, 0};
-		
-		if (recv(sockfd, &msg, sizeof(msg), MSG_WAITALL | MSG_DONTWAIT) != sizeof(msg))
+		struct msghdr mmsg;
+		struct iovec iov[1];
+		uint32_t hdr[2];
+
+		union {
+			struct cmsghdr cm;
+			char control[CMSG_SPACE(sizeof(int))];
+		} control_un;
+		struct cmsghdr *cmptr;
+
+		mmsg.msg_control = control_un.control;
+		mmsg.msg_controllen = sizeof(control_un.control);
+
+		mmsg.msg_name = NULL;
+		mmsg.msg_namelen = 0;
+
+		iov[0].iov_base = hdr;
+		iov[0].iov_len = sizeof(hdr); 
+		mmsg.msg_iov = iov;
+		mmsg.msg_iovlen = 1;
+
+		int status = recvmsg(sockfd, &mmsg, 0);
+
+		if (status < 0) {
+			printf("ERROR: Failed to receive message header.\n");
+			return -1;
+		} else if (status == 0) {
 			continue;
+		}	
 
-		int msg_size = msg.re_opcode_message_size >> 16;
-		int msg_opcode = msg.re_opcode_message_size & 0xFFFF; 
+		if ((fd = getfd(CMSG_FIRSTHDR(&mmsg))) != -1) {
+			fdbuffer[fdbuffer_index++] = fd;
+			fdbuffer_index %= FDBUFFER_LEN;
+		}
 
-		//printf(" %d %d %x\n", WL_REGISTRY_GLOBAL, msg_opcode, msg.re_opcode_message_size);
+		uint32_t object_id = hdr[0];
+		uint16_t msg_size = hdr[1] >> 16;
+		uint16_t msg_opcode = hdr[1] & 0xFFFF; 
 
-		if (msg.id == wl_registry_id && msg_opcode == WL_REGISTRY_GLOBAL) {
-			uint32_t name = read4(sockfd);
-			char *interface = readstring(sockfd);
-			uint32_t version = read4(sockfd);
+		//printf("%d %d %d\n", object_id, msg_opcode, msg_size);
+
+		uint32_t *msg_contents = NULL;
+
+		if (msg_size > 8) {
+			msg_contents = malloc(msg_size - sizeof(hdr));
+	
+			iov[0].iov_base = msg_contents;
+			iov[0].iov_len = msg_size - sizeof(hdr);
+	
+			if (recvmsg(sockfd, &mmsg, 0) <= 0) {
+				printf("ERROR: Failed to receive message contents.\n");
+				return -1;
+			}
+
+			if ((fd = getfd(CMSG_FIRSTHDR(&mmsg))) != -1) {
+				fdbuffer[fdbuffer_index++] = fd;
+				fdbuffer_index %= FDBUFFER_LEN;
+			}
+	
+			/* for (int i = 0; i < (msg_size - sizeof(hdr)) / 4; i++) {
+				printf("%x\n", msg_contents[i]);
+			} */
+		}
+
+		uint32_t *tmp = msg_contents;
+		uint32_t **ptr = &tmp;
+
+		if (object_id == wl_registry_id && msg_opcode == WL_REGISTRY_GLOBAL) {
+			uint32_t name = read4(ptr);
+			char *interface = readstring(ptr);
+			uint32_t version = read4(ptr);
 
 			//printf("%s\n", interface);
 
@@ -551,47 +625,44 @@ int main()
 			}
 
 			free(interface);
-		} else if (msg.id == WL_DISPLAY_OBJECT_ID && msg_opcode == WL_DISPLAY_ERROR) {
-			uint32_t object_id = read4(sockfd);
-			uint32_t code = read4(sockfd);
-			char *s = readstring(sockfd);	
+		} else if (object_id == WL_DISPLAY_OBJECT_ID && msg_opcode == WL_DISPLAY_ERROR) {
+			uint32_t object_id = read4(ptr);
+			uint32_t code = read4(ptr);
+			char *s = readstring(ptr);	
 
 			printf("ERROR: object_id %d, error %d, %s\n", object_id, code, s);	
 			free(s);
 			return -1;
-		} else if (msg.id == xdg_wm_base_id && msg_opcode == XDG_WM_BASE_PING) {
-			uint32_t serial = read4(sockfd);	
+		} else if (object_id == xdg_wm_base_id && msg_opcode == XDG_WM_BASE_PING) {
+			uint32_t serial = read4(ptr);	
 			printf("INFO: Ping!\n");
 			
 			xdg_wm_base_pong(sockfd, serial);
-		} else if (msg.id == xdg_surface_id && msg_opcode == XDG_SURFACE_CONFIGURE) { 
-			uint32_t serial = read4(sockfd);
+		} else if (object_id == xdg_surface_id && msg_opcode == XDG_SURFACE_CONFIGURE) { 
+			uint32_t serial = read4(ptr);
 			printf("INFO (xdg_surface): Suggested surface configuration change %d.\n", serial);
 
 			xdg_surface_ack_configure(sockfd, serial);
 			change_surface = true;
-		} else if (msg.id == wl_shm_id && msg_opcode == WL_SHM_FORMAT) {
-	  		uint32_t format = read4(sockfd);
+		} else if (object_id == wl_shm_id && msg_opcode == WL_SHM_FORMAT) {
+	  		uint32_t format = read4(ptr);
 
 			printf("INFO (wl_shm): Available pixel format 0x%x.\n", format);	
-		} else if (msg.id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
+		} else if (object_id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
 			printf("Goodbye...\n");
 
 			munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE);
 			close(shmfd);
 			close(sockfd);
 			return 0; 
-		} else if (msg.id == wl_buffer_id && msg_opcode == WL_BUFFER_RELEASE) {
+		} else if (object_id == wl_buffer_id && msg_opcode == WL_BUFFER_RELEASE) {
 			printf("INFO: Compositor released wl_buffer.\n");	
 		} else {
-			printf("%d %d\n", msg.id, msg_opcode);
-
-			uint8_t trash;
-
-			for (int i = 0; i < msg_size - sizeof(msg); i++) {
-				while (recv(sockfd, &trash, 1, MSG_WAITALL) != 1);
-			}
+			printf("%d %d\n", object_id, msg_opcode);
 		}
+
+		if (msg_contents != NULL)
+			free(msg_contents);
 	}
 
 	close(sockfd);

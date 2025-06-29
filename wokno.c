@@ -22,21 +22,24 @@
 
 uint32_t object_id = 2;
 
-int wl_registry_id = WL_NULL;
-int wl_shm_id = WL_NULL;
-int wl_shm_pool_id = WL_NULL;
-int wl_buffer_id = WL_NULL;
-int wl_surface_id = WL_NULL;
-int wl_compositor_id = WL_NULL;
-int xdg_wm_base_id = WL_NULL;
-int xdg_surface_id = WL_NULL;
-int xdg_toplevel_id = WL_NULL;
+uint32_t wl_registry_id = WL_NULL;
+uint32_t wl_shm_id = WL_NULL;
+uint32_t wl_shm_pool_id = WL_NULL;
+uint32_t wl_buffer_id = WL_NULL;
+uint32_t wl_surface_id = WL_NULL;
+uint32_t wl_compositor_id = WL_NULL;
+uint32_t xdg_wm_base_id = WL_NULL;
+uint32_t xdg_surface_id = WL_NULL;
+uint32_t xdg_toplevel_id = WL_NULL;
+uint32_t wl_seat_id = WL_NULL;
+uint32_t wl_keyboard_id = WL_NULL;
 
 uint32_t wl_shm_version;
 
 bool wl_shm_flag = false;
 bool wl_compositor_flag = false;
 bool xdg_wm_base_flag = false;
+bool wl_seat_flag = false;
 
 bool surfaces_flag = false;
 bool change_surface = false;
@@ -177,7 +180,7 @@ int wl_shm_create_pool(int sockfd, int shmfd, uint32_t size)
 	return object_id++;
 }
 
-int wl_shm_pool_create_buffer(int sockfd, uint32_t offset, uint32_t width, uint32_t height, uint32_t stride, uint32_t format)
+int wl_shm_pool_create_buffer(int sockfd, uint32_t wl_shm_pool_id, uint32_t offset, uint32_t width, uint32_t height, uint32_t stride, uint32_t format)
 {
 	unsigned int cbmsg_len = 32;
 
@@ -271,7 +274,7 @@ int xdg_wm_base_get_xdg_surface(int sockfd, uint32_t wl_surface_id)
 	return object_id++;
 }
 
-int xdg_surface_get_toplevel(int sockfd)
+int xdg_surface_get_toplevel(int sockfd, uint32_t xdg_surface_id)
 {
 	unsigned int gtmsg_len = 12;
 
@@ -293,7 +296,7 @@ int xdg_surface_get_toplevel(int sockfd)
 	return object_id++;
 }
 
-void wl_surface_commit(int sockfd)
+void wl_surface_commit(int sockfd, uint32_t wl_surface_id)
 {
 	unsigned int cmsg_len = 8;
 
@@ -314,7 +317,7 @@ void wl_surface_commit(int sockfd)
 	return;
 }
 
-void wl_surface_attach(int sockfd, uint32_t wl_buffer_id)
+void wl_surface_attach(int sockfd, uint32_t wl_surface_id, uint32_t wl_buffer_id)
 {
 	unsigned int amsg_len = 20;
 
@@ -338,7 +341,7 @@ void wl_surface_attach(int sockfd, uint32_t wl_buffer_id)
 	return;
 }
 
-void xdg_surface_ack_configure(int sockfd, uint32_t serial)
+void xdg_surface_ack_configure(int sockfd, uint32_t xdg_surface_id, uint32_t serial)
 {
 	unsigned int acmsg_len = 12;
 
@@ -360,7 +363,7 @@ void xdg_surface_ack_configure(int sockfd, uint32_t serial)
 	return;
 }
 
-void xdg_surface_set_window_geometry(int sockfd, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+void xdg_surface_set_window_geometry(int sockfd, uint32_t xdg_surface_id, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 {
 	unsigned int swgmsg_len = 24;
 
@@ -409,6 +412,8 @@ void * map_shm(int shmfd)
 		printf("ERROR: Failed to mmap shm.\n");
 		exit(errno);
 	}
+
+bool wl_seat_flag = false;
 
 	return shm;
 }
@@ -470,6 +475,28 @@ int getfd(struct cmsghdr *cmptr)
 	return fd;
 }
 
+int wl_seat_get_keyboard(int sockfd)
+{
+	unsigned int gkmsg_len = 12;
+
+	uint32_t *gkmsg = malloc(gkmsg_len);
+	uint32_t *tmp = gkmsg;
+
+	tmp = write4(tmp, wl_seat_id);
+	tmp = write4(tmp, (gkmsg_len << 16) | WL_SEAT_GET_KEYBOARD);
+	tmp = write4(tmp, object_id);
+
+	if (send(sockfd, gkmsg, gkmsg_len, 0) != gkmsg_len) {
+		printf("wl_seat_get_keyboard: ni ratal poslat\n");
+		exit(errno);
+	}
+
+	free(gkmsg);
+
+	printf("INFO: Got wl_keyboard with id %d.\n", object_id);
+	return object_id++;
+}
+
 int fd;
 
 int main()
@@ -516,10 +543,10 @@ int main()
 			if (wl_shm_pool_id == 0)
 				wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE);
 			if (wl_buffer_id == 0)
-				wl_buffer_id = wl_shm_pool_create_buffer(sockfd, 0, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
+				wl_buffer_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, 0, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
 
-			wl_surface_attach(sockfd, wl_buffer_id);
-			wl_surface_commit(sockfd);
+			wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
+			wl_surface_commit(sockfd, wl_surface_id);
 
 			change_surface = false;
 			continue;
@@ -528,9 +555,9 @@ int main()
 		if (wl_compositor_flag && xdg_wm_base_flag) {
 			wl_surface_id = wl_compositor_create_surface(sockfd);
 			xdg_surface_id = xdg_wm_base_get_xdg_surface(sockfd, wl_surface_id);
-			xdg_toplevel_id = xdg_surface_get_toplevel(sockfd);
+			xdg_toplevel_id = xdg_surface_get_toplevel(sockfd, xdg_surface_id);
 
-			wl_surface_commit(sockfd);
+			wl_surface_commit(sockfd, wl_surface_id);
 
 			wl_compositor_flag = false;
 			xdg_wm_base_flag = false;
@@ -538,6 +565,14 @@ int main()
 			continue;
 		}
 
+		if (wl_seat_flag) {
+			wl_keyboard_id = wl_seat_get_keyboard(sockfd);
+
+			wl_seat_flag = false;
+			continue;
+		}
+
+		// TODO: ta del z pridobivanjem sporočila se da sprement v prisrčno funkcijo
 		struct msghdr mmsg;
 		struct iovec iov[1];
 		uint32_t hdr[2];
@@ -622,6 +657,9 @@ int main()
 			} else if (strcmp(interface, "xdg_wm_base") == 0) {
 				xdg_wm_base_id = wl_registry_bind(sockfd, name, interface, version);
 				xdg_wm_base_flag = true;
+			} else if (strcmp(interface, "wl_seat") == 0) {
+				wl_seat_id = wl_registry_bind(sockfd, name, interface, version);
+				wl_seat_flag = true;
 			}
 
 			free(interface);
@@ -642,7 +680,7 @@ int main()
 			uint32_t serial = read4(ptr);
 			printf("INFO (xdg_surface): Suggested surface configuration change %d.\n", serial);
 
-			xdg_surface_ack_configure(sockfd, serial);
+			xdg_surface_ack_configure(sockfd, xdg_surface_id, serial);
 			change_surface = true;
 		} else if (object_id == wl_shm_id && msg_opcode == WL_SHM_FORMAT) {
 	  		uint32_t format = read4(ptr);
@@ -651,12 +689,32 @@ int main()
 		} else if (object_id == xdg_toplevel_id && msg_opcode == XDG_TOPLEVEL_CLOSE) {
 			printf("Goodbye...\n");
 
+			// TODO: reč wl_seatu da ga zapuščaš
 			munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE);
 			close(shmfd);
 			close(sockfd);
 			return 0; 
 		} else if (object_id == wl_buffer_id && msg_opcode == WL_BUFFER_RELEASE) {
 			printf("INFO: Compositor released wl_buffer.\n");	
+		} else if (object_id == wl_keyboard_id && msg_opcode == WL_KEYBOARD_KEYMAP) {
+			fd = fdbuffer[next_fd++];
+			next_fd %= FDBUFFER_LEN;
+
+			uint32_t format = read4(ptr);
+			uint32_t size = read4(ptr);
+
+			char *keymap = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+
+			if (keymap == (void *)-1) {
+				printf("ERROR: Failed to map keymap data.\n");
+				exit(errno);
+			}
+
+			//printf("%s", keymap); // <- Spam.
+
+			munmap(keymap, size);
+
+			printf("INFO: Read keymap data.\n");
 		} else {
 			printf("%d %d\n", object_id, msg_opcode);
 		}

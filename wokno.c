@@ -34,6 +34,8 @@ uint32_t xdg_toplevel_id = WL_NULL;
 uint32_t wl_seat_id = WL_NULL;
 uint32_t wl_keyboard_id = WL_NULL;
 
+uint32_t wl_buffer2_id = WL_NULL;
+
 uint32_t wl_shm_version;
 
 bool wl_shm_flag = false;
@@ -396,7 +398,7 @@ int create_shm()
 		exit(errno);
 	}
 
-	if (posix_fallocate(shmfd, 0, WIDTH * HEIGHT * PIXEL_SIZE) != 0) {
+	if (posix_fallocate(shmfd, 0, WIDTH * HEIGHT * PIXEL_SIZE * 2) != 0) {
 		printf("ERROR: Failed to allocate space for shm.\n");
 		exit(errno);
 	}
@@ -406,7 +408,7 @@ int create_shm()
 
 void * map_shm(int shmfd)
 {
-	void *shm = mmap(NULL, WIDTH * HEIGHT * PIXEL_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
+	void *shm = mmap(NULL, WIDTH * HEIGHT * PIXEL_SIZE * 2, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 	
 	if (shm == (void *)-1) {
 		printf("ERROR: Failed to mmap shm.\n");
@@ -497,6 +499,31 @@ int wl_seat_get_keyboard(int sockfd)
 	return object_id++;
 }
 
+void wl_surface_damage_buffer(int sockfd, uint32_t wl_surface_id, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+	unsigned int dbmsg_len = 24;
+
+	uint32_t *dbmsg = malloc(dbmsg_len);
+	uint32_t *tmp = dbmsg;
+
+	tmp = write4(tmp, wl_surface_id);
+	tmp = write4(tmp, (dbmsg_len << 16) | WL_SURFACE_DAMAGE_BUFFER);
+	tmp = write4(tmp, x);
+	tmp = write4(tmp, y);
+	tmp = write4(tmp, width);
+	tmp = write4(tmp, height);
+
+	if (send(sockfd, dbmsg, dbmsg_len, 0) != dbmsg_len) {
+		printf("wl_surface_damage_buffer: ni ratal poslat\n");
+		exit(errno);
+	}
+
+	free(dbmsg);
+
+	printf("INFO: Damaged buffer from (%d, %d) to (%d, %d).\n", x, y, x + width, y + height);
+	return;
+}
+
 int fd;
 
 int main()
@@ -506,14 +533,14 @@ int main()
 	int shmfd = create_shm();
 	void *shm = map_shm(shmfd);
 
-	int vegfd = open("./vegova.data", 0, S_IRUSR);
+	uint32_t *pixel_buffer = shm;
+
+	/*int vegfd = open("./vegova.data", 0, S_IRUSR);
 
 	if (vegfd == -1) {
 		printf("šit\n");
 		return -1;
 	}
-
-	uint32_t *pixel_buffer = shm;
 
 	for (int i = 0; i < WIDTH * HEIGHT; i++) {
 		uint8_t r;
@@ -534,21 +561,50 @@ int main()
 		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
 	}
 
-	close(vegfd);
+	close(vegfd);*/
+
+	for (int i = 0; i < WIDTH * HEIGHT; i++) {
+		uint8_t r = 0;
+		uint8_t g = 0xFF;
+		uint8_t b = 0;
+		
+		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
+	}
+
+	for (int i = WIDTH * HEIGHT; i < WIDTH * HEIGHT * 2; i++) {
+		uint8_t r = 0;
+		uint8_t g = 0;
+		uint8_t b = 0xFF;
+		
+		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
+	}
 
 	wl_registry_id = wl_display_get_registry(sockfd);
 
+	int cntr = 0;
+
 	while (1) {
 		if (surfaces_flag && change_surface) {
-			if (wl_shm_pool_id == 0)
-				wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE);
-			if (wl_buffer_id == 0)
+			if (wl_shm_pool_id == WL_NULL)
+				wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE * 2);
+			if (wl_buffer_id == WL_NULL)
 				wl_buffer_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, 0, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
+			if (wl_buffer2_id == WL_NULL)
+				wl_buffer2_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, WIDTH * HEIGHT * PIXEL_SIZE, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
 
-			wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
+			wl_surface_damage_buffer(sockfd, wl_surface_id, 0, 0, WIDTH, HEIGHT);
+
+			if (cntr % 2)			
+				wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
+			else
+				wl_surface_attach(sockfd, wl_surface_id, wl_buffer2_id);
+	
+			//wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
+
 			wl_surface_commit(sockfd, wl_surface_id);
 
 			change_surface = false;
+			cntr++;
 			continue;
 		}
 
@@ -695,7 +751,11 @@ int main()
 			close(sockfd);
 			return 0; 
 		} else if (object_id == wl_buffer_id && msg_opcode == WL_BUFFER_RELEASE) {
-			printf("INFO: Compositor released wl_buffer.\n");	
+			printf("INFO: Compositor released wl_buffer %d.\n", wl_buffer_id);	
+
+		} else if (object_id == wl_buffer2_id && msg_opcode == WL_BUFFER_RELEASE) {
+			printf("INFO: Compositor released wl_buffer %d.\n", wl_buffer2_id);	
+
 		} else if (object_id == wl_keyboard_id && msg_opcode == WL_KEYBOARD_KEYMAP) {
 			fd = fdbuffer[next_fd++];
 			next_fd %= FDBUFFER_LEN;
@@ -715,6 +775,37 @@ int main()
 			munmap(keymap, size);
 
 			printf("INFO: Read keymap data.\n");
+		} else if (object_id == wl_keyboard_id && msg_opcode == WL_KEYBOARD_KEY) {
+			uint32_t serial = read4(ptr);
+			uint32_t time = read4(ptr);
+			uint32_t key = read4(ptr) + 8; // ne vem zakaj +8, pač tko piše v wayland specifikaciji
+			uint32_t state = read4(ptr);
+
+			char *state_s = "???";
+
+			if (state == 0)
+				state_s = "released";
+			else if (state == 1)
+			  	state_s = "pressed";	
+
+			switch (key) {
+				case 25: //w
+					printf("INFO: Key w was %s.\n", state_s);
+					break;
+				case 38: //a
+					printf("INFO: Key a was %s.\n", state_s);
+					break;
+				case 39: //s
+					printf("INFO: Key s was %s.\n", state_s);
+					break;
+				case 40: //d
+					printf("INFO: Key d was %s.\n", state_s);
+					break;
+				default:
+					printf("INFO: Key %d was %s.\n", key, state_s);
+					break;
+			}
+
 		} else {
 			printf("%d %d\n", object_id, msg_opcode);
 		}

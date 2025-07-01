@@ -10,15 +10,27 @@
 #include <sys/mman.h>
 #include <stdbool.h>
 #include <sys/shm.h>
+#include <time.h> // dve različni knjižnici?
+#include <sys/time.h>
+#include <unistd.h>
 
 #define WL_DISPLAY_OBJECT_ID 1
 #define WL_NULL 0
 
-#define WIDTH 1024
-#define HEIGHT 576
+#define WIDTH 800
+#define HEIGHT 800
 #define PIXEL_SIZE 4
+#define BLOCK_WIDTH (WIDTH / 32)
+#define BLOCK_HEIGHT (HEIGHT / 32)
 
 #include "functions.h"
+
+enum direction_t {
+	LEFT,
+	RIGHT,
+	UP,
+	DOWN
+};
 
 uint32_t object_id = 2;
 
@@ -50,6 +62,12 @@ bool change_surface = false;
 int fdbuffer[FDBUFFER_LEN];
 int fdbuffer_index = 0;
 int next_fd = 0;
+
+int fd;
+int head_x = 0;
+int head_y = 0;
+
+enum direction_t direction = DOWN;
 
 uint32_t * write4(uint32_t *buffer, uint32_t val)
 {
@@ -172,6 +190,7 @@ int wl_shm_create_pool(int sockfd, int shmfd, uint32_t size)
 	msg.msg_iovlen = 1;
 
 	if (sendmsg(sockfd, &msg, 0) < 0) {
+
 		printf("wl_shm_create_pool: ni ratal poslat msg\n");
 		exit(errno);
 	}
@@ -524,7 +543,16 @@ void wl_surface_damage_buffer(int sockfd, uint32_t wl_surface_id, uint32_t x, ui
 	return;
 }
 
-int fd;
+void paint_block(uint32_t *pixel_buffer, int x, int y, uint32_t xrgb)
+{
+	for (int xf = x * BLOCK_WIDTH; xf < (x + 1) * BLOCK_WIDTH; xf++) {
+		for (int yf = y * BLOCK_HEIGHT; yf < (y + 1) * BLOCK_HEIGHT; yf++) {
+			pixel_buffer[xf + yf * WIDTH] = xrgb;
+		}
+	}
+
+	return;
+}
 
 int main()
 {
@@ -535,56 +563,39 @@ int main()
 
 	uint32_t *pixel_buffer = shm;
 
-	/*int vegfd = open("./vegova.data", 0, S_IRUSR);
-
-	if (vegfd == -1) {
-		printf("šit\n");
-		return -1;
-	}
-
-	for (int i = 0; i < WIDTH * HEIGHT; i++) {
-		uint8_t r;
-		uint8_t g;
-		uint8_t b;
-			
-		int status = 0;
-
-		status |= read(vegfd, &r, 1);
-		status |= read(vegfd, &g, 1);
-		status |= read(vegfd, &b, 1);
-
-		if (status == -1) {
-			printf("Failed to read from file.\n");	
-			return -1;
-		}
-
-		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
-	}
-
-	close(vegfd);*/
-
-	for (int i = 0; i < WIDTH * HEIGHT; i++) {
-		uint8_t r = 0;
-		uint8_t g = 0xFF;
-		uint8_t b = 0;
-		
-		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
-	}
-
-	for (int i = WIDTH * HEIGHT; i < WIDTH * HEIGHT * 2; i++) {
+	for (int i = 0; i < WIDTH * HEIGHT * 2; i++) {
 		uint8_t r = 0;
 		uint8_t g = 0;
-		uint8_t b = 0xFF;
+		uint8_t b = 0;
 		
 		pixel_buffer[i] = (r << 16) | (g << 8) | b; 
 	}
 
 	wl_registry_id = wl_display_get_registry(sockfd);
 
+	uint32_t *cur_buffer = shm;
+	uint32_t *prev_buffer = (uint32_t *)shm + WIDTH * HEIGHT;
+	uint32_t *cur_buffer_id = &wl_buffer_id;
+	uint32_t *prev_buffer_id = &wl_buffer2_id;
+
 	int cntr = 0;
 
+	bool first = false;
+
+	struct timezone tz = {0, 0};
+	struct timeval tv;
+
+	int msec = 0;
+	int interval = 250;
+	gettimeofday(&tv, &tz);
+	uint64_t before = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+
 	while (1) {
-		if (surfaces_flag && change_surface) {
+		gettimeofday(&tv, &tz);
+		uint64_t now = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+		uint64_t difference = now - before;
+
+		if (first && change_surface) {
 			if (wl_shm_pool_id == WL_NULL)
 				wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE * 2);
 			if (wl_buffer_id == WL_NULL)
@@ -592,20 +603,70 @@ int main()
 			if (wl_buffer2_id == WL_NULL)
 				wl_buffer2_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, WIDTH * HEIGHT * PIXEL_SIZE, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
 
-			wl_surface_damage_buffer(sockfd, wl_surface_id, 0, 0, WIDTH, HEIGHT);
-
-			if (cntr % 2)			
-				wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
-			else
-				wl_surface_attach(sockfd, wl_surface_id, wl_buffer2_id);
-	
-			//wl_surface_attach(sockfd, wl_surface_id, wl_buffer_id);
-
+			wl_surface_attach(sockfd, wl_surface_id, *cur_buffer_id);
 			wl_surface_commit(sockfd, wl_surface_id);
 
-			change_surface = false;
-			cntr++;
-			continue;
+			first = false;
+		}
+
+		// printf("%lu\n", difference);
+
+		if (difference >= interval) {
+			if (surfaces_flag) {
+				if (wl_shm_pool_id == WL_NULL)
+					wl_shm_pool_id = wl_shm_create_pool(sockfd, shmfd, WIDTH * HEIGHT * PIXEL_SIZE * 2);
+				if (wl_buffer_id == WL_NULL)
+					wl_buffer_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, 0, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
+				if (wl_buffer2_id == WL_NULL)
+					wl_buffer2_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, WIDTH * HEIGHT * PIXEL_SIZE, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
+
+				for (int i = 0; i < WIDTH * HEIGHT; i++) {
+					cur_buffer[i] = prev_buffer[i];	
+				}
+
+				//wl_surface_damage_buffer(sockfd, wl_surface_id, 0, 0, WIDTH, HEIGHT);
+				
+				wl_surface_damage_buffer(sockfd, wl_surface_id, head_x * BLOCK_WIDTH, head_y * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+
+				paint_block(cur_buffer, head_x, head_y, 0);
+
+				switch (direction) {
+					case UP: //w
+						head_y--;
+						break;
+					case LEFT: //a
+						head_x--;
+						break;
+					case DOWN: //s
+						head_y++;
+						break;
+					case RIGHT: //d
+						head_x++;
+						break;
+					default:
+						break;
+				}
+	
+				wl_surface_damage_buffer(sockfd, wl_surface_id, head_x * BLOCK_WIDTH, head_y * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+
+				paint_block(cur_buffer, head_x, head_y, 0xFFFFFF);	
+	
+				wl_surface_attach(sockfd, wl_surface_id, *cur_buffer_id);
+				wl_surface_commit(sockfd, wl_surface_id);
+	
+				uint32_t *tmp = cur_buffer;
+				cur_buffer = prev_buffer;
+				prev_buffer = tmp;
+	
+				tmp = cur_buffer_id;
+				cur_buffer_id = prev_buffer_id;
+				prev_buffer_id = tmp;
+	
+				change_surface = false;
+				cntr++;
+			}
+
+			before = now;
 		}
 
 		if (wl_compositor_flag && xdg_wm_base_flag) {
@@ -617,6 +678,7 @@ int main()
 
 			wl_compositor_flag = false;
 			xdg_wm_base_flag = false;
+			first = true;
 			surfaces_flag = true;
 			continue;
 		}
@@ -650,13 +712,14 @@ int main()
 		mmsg.msg_iov = iov;
 		mmsg.msg_iovlen = 1;
 
-		int status = recvmsg(sockfd, &mmsg, 0);
+		int status = recvmsg(sockfd, &mmsg, MSG_DONTWAIT | MSG_WAITALL);
 
-		if (status < 0) {
+		if (status != sizeof(hdr) || status == EWOULDBLOCK || status == EAGAIN) {
+			usleep(5);
+			continue;
+		} else if (status < 0) {
 			printf("ERROR: Failed to receive message header.\n");
 			return -1;
-		} else if (status == 0) {
-			continue;
 		}	
 
 		if ((fd = getfd(CMSG_FIRSTHDR(&mmsg))) != -1) {
@@ -678,7 +741,7 @@ int main()
 			iov[0].iov_base = msg_contents;
 			iov[0].iov_len = msg_size - sizeof(hdr);
 	
-			if (recvmsg(sockfd, &mmsg, 0) <= 0) {
+			if (recvmsg(sockfd, &mmsg, MSG_WAITALL) <= 0) {
 				printf("ERROR: Failed to receive message contents.\n");
 				return -1;
 			}
@@ -791,21 +854,24 @@ int main()
 			switch (key) {
 				case 25: //w
 					printf("INFO: Key w was %s.\n", state_s);
+					direction = UP;
 					break;
 				case 38: //a
 					printf("INFO: Key a was %s.\n", state_s);
+					direction = LEFT;
 					break;
 				case 39: //s
 					printf("INFO: Key s was %s.\n", state_s);
+					direction = DOWN;
 					break;
 				case 40: //d
 					printf("INFO: Key d was %s.\n", state_s);
+					direction = RIGHT;
 					break;
 				default:
 					printf("INFO: Key %d was %s.\n", key, state_s);
 					break;
 			}
-
 		} else {
 			printf("%d %d\n", object_id, msg_opcode);
 		}

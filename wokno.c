@@ -10,18 +10,19 @@
 #include <sys/mman.h>
 #include <stdbool.h>
 #include <sys/shm.h>
-#include <time.h> // dve različni knjižnici?
 #include <sys/time.h>
 #include <unistd.h>
 
 #define WL_DISPLAY_OBJECT_ID 1
 #define WL_NULL 0
 
+#define GRID_SIZE 8
+
 #define WIDTH 800
 #define HEIGHT 800
 #define PIXEL_SIZE 4
-#define BLOCK_WIDTH (WIDTH / 32)
-#define BLOCK_HEIGHT (HEIGHT / 32)
+#define BLOCK_WIDTH (WIDTH / GRID_SIZE)
+#define BLOCK_HEIGHT (HEIGHT / GRID_SIZE)
 
 #include "functions.h"
 
@@ -37,7 +38,6 @@ uint32_t object_id = 2;
 uint32_t wl_registry_id = WL_NULL;
 uint32_t wl_shm_id = WL_NULL;
 uint32_t wl_shm_pool_id = WL_NULL;
-uint32_t wl_buffer_id = WL_NULL;
 uint32_t wl_surface_id = WL_NULL;
 uint32_t wl_compositor_id = WL_NULL;
 uint32_t xdg_wm_base_id = WL_NULL;
@@ -46,6 +46,7 @@ uint32_t xdg_toplevel_id = WL_NULL;
 uint32_t wl_seat_id = WL_NULL;
 uint32_t wl_keyboard_id = WL_NULL;
 
+uint32_t wl_buffer_id = WL_NULL;
 uint32_t wl_buffer2_id = WL_NULL;
 
 uint32_t wl_shm_version;
@@ -63,11 +64,17 @@ int fdbuffer[FDBUFFER_LEN];
 int fdbuffer_index = 0;
 int next_fd = 0;
 
+int snake_x[GRID_SIZE * GRID_SIZE];
+int snake_y[GRID_SIZE * GRID_SIZE];
+int length = 1;
+
+int fruit_x = 1;
+int fruit_y = 0;
+
 int fd;
-int head_x = 0;
-int head_y = 0;
 
 enum direction_t direction = DOWN;
+enum direction_t pending_direction = DOWN;
 
 uint32_t * write4(uint32_t *buffer, uint32_t val)
 {
@@ -554,6 +561,32 @@ void paint_block(uint32_t *pixel_buffer, int x, int y, uint32_t xrgb)
 	return;
 }
 
+uint32_t new_fruit_coords()
+{
+	uint32_t coords[GRID_SIZE * GRID_SIZE - length];
+	int coord_i = 0;
+	int coord = 0;
+
+	while (coord_i < sizeof(coords) / sizeof(uint32_t)) {
+		bool free = true;
+
+		for (int i = 0; i < length; i++) {
+			uint32_t pos = snake_x[i] + snake_y[i] * GRID_SIZE;
+			if (pos == coord) {
+				free = false;
+				break;
+			}
+		}
+
+		if (free)
+			coords[coord_i++] = coord;
+
+		coord++;
+	}
+
+	return coords[random() % (sizeof(coords) / sizeof(uint32_t))];
+}
+
 int main()
 {
 	int sockfd = connect_to_wl_socket();
@@ -584,6 +617,12 @@ int main()
 
 	struct timezone tz = {0, 0};
 	struct timeval tv;
+
+	memset(snake_x, -1, sizeof(snake_x));
+	memset(snake_y, -1, sizeof(snake_y));
+
+	snake_x[0] = 0;
+	snake_y[0] = 0;
 
 	int msec = 0;
 	int interval = 250;
@@ -620,39 +659,76 @@ int main()
 				if (wl_buffer2_id == WL_NULL)
 					wl_buffer2_id = wl_shm_pool_create_buffer(sockfd, wl_shm_pool_id, WIDTH * HEIGHT * PIXEL_SIZE, WIDTH, HEIGHT, WIDTH * PIXEL_SIZE, 1);
 
+				direction = pending_direction;
+
 				for (int i = 0; i < WIDTH * HEIGHT; i++) {
 					cur_buffer[i] = prev_buffer[i];	
 				}
 
 				//wl_surface_damage_buffer(sockfd, wl_surface_id, 0, 0, WIDTH, HEIGHT);
 				
-				wl_surface_damage_buffer(sockfd, wl_surface_id, head_x * BLOCK_WIDTH, head_y * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+				if (snake_x[length - 1] != -1) {
+					wl_surface_damage_buffer(sockfd, wl_surface_id, snake_x[length - 1] * BLOCK_WIDTH, snake_y[length - 1] * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+					paint_block(cur_buffer, snake_x[length - 1], snake_y[length - 1], 0);
+				}	
 
-				paint_block(cur_buffer, head_x, head_y, 0);
+				for (int i = length - 1; i > 0; i--) {
+					snake_x[i] = snake_x[i - 1];
+					snake_y[i] = snake_y[i - 1];
+				}
 
 				switch (direction) {
 					case UP: //w
-						head_y--;
+						snake_y[0]--;
 						break;
 					case LEFT: //a
-						head_x--;
+						snake_x[0]--;
 						break;
 					case DOWN: //s
-						head_y++;
+						snake_y[0]++;
 						break;
 					case RIGHT: //d
-						head_x++;
+						snake_x[0]++;
 						break;
 					default:
 						break;
 				}
 	
-				wl_surface_damage_buffer(sockfd, wl_surface_id, head_x * BLOCK_WIDTH, head_y * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+				wl_surface_damage_buffer(sockfd, wl_surface_id, fruit_x * BLOCK_WIDTH, fruit_y * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+				paint_block(cur_buffer, fruit_x, fruit_y, 0xFF0000);
 
-				paint_block(cur_buffer, head_x, head_y, 0xFFFFFF);	
+				wl_surface_damage_buffer(sockfd, wl_surface_id, snake_x[0] * BLOCK_WIDTH, snake_y[0] * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT);
+				paint_block(cur_buffer, snake_x[0], snake_y[0], 0xFFFFFF);
 	
 				wl_surface_attach(sockfd, wl_surface_id, *cur_buffer_id);
 				wl_surface_commit(sockfd, wl_surface_id);
+
+				for (int i = 1; i < length; i++) {
+					if (snake_x[0] == snake_x[i] && snake_y[0] == snake_y[i]) {
+						printf("INFO: You died.\n");
+						munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE * 2);
+						close(shmfd);
+						close(sockfd);
+						return 0;
+					}
+				}
+
+				if (snake_x[0] == fruit_x && snake_y[0] == fruit_y) {
+					// in premakn sadež
+					
+					uint32_t packed_coord = new_fruit_coords();
+					uint32_t x = packed_coord % GRID_SIZE;
+					uint32_t y = packed_coord / GRID_SIZE;
+
+					printf("%d\n", packed_coord);
+
+					printf("x: %d y: %d\n", x, y);
+
+					fruit_x = x;
+					fruit_y = y;
+
+					length++;
+				}
 	
 				uint32_t *tmp = cur_buffer;
 				cur_buffer = prev_buffer;
@@ -809,7 +885,7 @@ int main()
 			printf("Goodbye...\n");
 
 			// TODO: reč wl_seatu da ga zapuščaš
-			munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE);
+			munmap(shm, WIDTH * HEIGHT * PIXEL_SIZE * 2);
 			close(shmfd);
 			close(sockfd);
 			return 0; 
@@ -851,26 +927,46 @@ int main()
 			else if (state == 1)
 			  	state_s = "pressed";	
 
+			/* DEBUG */
 			switch (key) {
 				case 25: //w
 					printf("INFO: Key w was %s.\n", state_s);
-					direction = UP;
 					break;
 				case 38: //a
 					printf("INFO: Key a was %s.\n", state_s);
-					direction = LEFT;
 					break;
 				case 39: //s
 					printf("INFO: Key s was %s.\n", state_s);
-					direction = DOWN;
 					break;
 				case 40: //d
 					printf("INFO: Key d was %s.\n", state_s);
-					direction = RIGHT;
 					break;
 				default:
 					printf("INFO: Key %d was %s.\n", key, state_s);
 					break;
+			}
+
+			if (state == 1) {
+				switch (key) {
+					case 25: //w
+						if (direction != DOWN)
+							pending_direction = UP;
+						break;
+					case 38: //a
+						if (direction != RIGHT)
+							pending_direction = LEFT;
+						break;
+					case 39: //s
+						if (direction != UP)
+							pending_direction = DOWN;
+						break;
+					case 40: //d
+						if (direction != LEFT)
+							pending_direction = RIGHT;
+						break;
+					default:
+						break;
+				}
 			}
 		} else {
 			printf("%d %d\n", object_id, msg_opcode);
